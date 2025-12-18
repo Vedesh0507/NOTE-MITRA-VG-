@@ -375,13 +375,9 @@ export default function NoteDetailPage() {
 
   const handlePreview = () => {
     if (note) {
-      // Open PDF in new tab for preview
-      const fileId = note.fileId || note._id;
-      // Use API base URL which already includes /api
-      const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api';
-      const previewUrl = `${apiBase}/notes/view-pdf/${fileId}`;
-      console.log('👁️ Opening preview:', previewUrl);
-      window.open(previewUrl, '_blank');
+      // Navigate to the integrated PDF preview with AI chat
+      const previewNoteId = note._id || note.id || noteId;
+      router.push(`/notes/${previewNoteId}/preview`);
     }
   };
 
@@ -562,7 +558,7 @@ export default function NoteDetailPage() {
             <div className="flex flex-col gap-2">
               <Button onClick={handlePreview} variant="outline" className="flex items-center gap-2">
                 <Eye className="w-4 h-4" />
-                Preview PDF
+                Preview with AI Chat
               </Button>
               <Button onClick={handleDownload} className="flex items-center gap-2">
                 <Download className="w-4 h-4" />

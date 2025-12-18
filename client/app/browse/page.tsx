@@ -1,10 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Search, Filter, SlidersHorizontal, Download, Eye, ThumbsUp, Calendar, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { notesAPI } from '@/lib/api';
+import { BRANCHES, SEMESTERS, getSubjectsForBranchAndSemester, getBranchShortName } from '@/lib/curriculum';
 
 interface Note {
   id: number | string;
@@ -30,19 +31,26 @@ export default function BrowsePage() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [showFilters, setShowFilters] = useState(false);
+  const [showFilters, setShowFilters] = useState(true); // Show filters by default
   
-  // Filter states
-  const [selectedSubject, setSelectedSubject] = useState('');
-  const [selectedSemester, setSelectedSemester] = useState('');
+  // Filter states - Branch and Semester are primary filters
   const [selectedBranch, setSelectedBranch] = useState('');
+  const [selectedSemester, setSelectedSemester] = useState('');
+  const [selectedSubject, setSelectedSubject] = useState('');
   const [selectedModule, setSelectedModule] = useState('');
   const [sortBy, setSortBy] = useState('newest');
 
-  // Common options
-  const subjects = ['Mathematics', 'Physics', 'Chemistry', 'Computer Science', 'Electronics', 'Mechanical', 'Civil', 'Electrical'];
-  const semesters = ['1', '2', '3', '4', '5', '6', '7', '8'];
-  const branches = ['Computer Science', 'Electronics', 'Mechanical', 'Civil', 'Electrical', 'IT', 'Chemical'];
+  // Get dynamic subjects based on selected branch and semester
+  const availableSubjects = useMemo(() => {
+    if (!selectedBranch || !selectedSemester) return [];
+    return getSubjectsForBranchAndSemester(selectedBranch, selectedSemester);
+  }, [selectedBranch, selectedSemester]);
+
+  // Reset subject when branch or semester changes
+  useEffect(() => {
+    setSelectedSubject('');
+  }, [selectedBranch, selectedSemester]);
+
   const sortOptions = [
     { value: 'newest', label: 'Newest First' },
     { value: 'oldest', label: 'Oldest First' },
@@ -162,34 +170,7 @@ export default function BrowsePage() {
           {showFilters && (
             <div className="mt-4 pt-4 border-t border-gray-200">
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Subject</label>
-                  <select
-                    value={selectedSubject}
-                    onChange={(e) => setSelectedSubject(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="">All Subjects</option>
-                    {subjects.map(subject => (
-                      <option key={subject} value={subject}>{subject}</option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Semester</label>
-                  <select
-                    value={selectedSemester}
-                    onChange={(e) => setSelectedSemester(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="">All Semesters</option>
-                    {semesters.map(sem => (
-                      <option key={sem} value={sem}>Semester {sem}</option>
-                    ))}
-                  </select>
-                </div>
-
+                {/* Branch - Primary Filter */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Branch</label>
                   <select
@@ -198,10 +179,54 @@ export default function BrowsePage() {
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
                     <option value="">All Branches</option>
-                    {branches.map(branch => (
-                      <option key={branch} value={branch}>{branch}</option>
+                    {BRANCHES.map(branch => (
+                      <option key={branch} value={branch}>{getBranchShortName(branch)} - {branch}</option>
                     ))}
                   </select>
+                </div>
+
+                {/* Semester - Primary Filter */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Semester</label>
+                  <select
+                    value={selectedSemester}
+                    onChange={(e) => setSelectedSemester(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">All Semesters</option>
+                    {SEMESTERS.map(sem => (
+                      <option key={sem} value={sem}>Semester {sem}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Subject - Dynamic based on Branch + Semester */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Subject</label>
+                  <select
+                    value={selectedSubject}
+                    onChange={(e) => setSelectedSubject(e.target.value)}
+                    disabled={!selectedBranch || !selectedSemester}
+                    className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                      (!selectedBranch || !selectedSemester) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''
+                    }`}
+                  >
+                    {(!selectedBranch || !selectedSemester) ? (
+                      <option value="">Select branch & semester first</option>
+                    ) : (
+                      <>
+                        <option value="">All Subjects</option>
+                        {availableSubjects.map(subject => (
+                          <option key={subject} value={subject}>{subject}</option>
+                        ))}
+                      </>
+                    )}
+                  </select>
+                  {selectedBranch && selectedSemester && availableSubjects.length > 0 && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      {availableSubjects.length} subjects available
+                    </p>
+                  )}
                 </div>
 
                 <div>

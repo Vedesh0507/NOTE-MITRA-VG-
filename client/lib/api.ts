@@ -227,3 +227,20 @@ export const adminAPI = {
 
   resolveReport: (noteId: string) => api.put(`/admin/reports/${noteId}/resolve`),
 };
+
+// AI Chat API
+export const aiAPI = {
+  // Send message to AI chatbot
+  chat: (data: {
+    message: string;
+    pageText?: string;
+    userId?: string;
+    noteId?: string;
+  }) => api.post('/ai/chat', data),
+
+  // Check AI service status
+  getStatus: () => api.get('/ai/status'),
+};
+
+// Get base API URL for direct fetch calls
+export const getAPIBaseUrl = () => API_URL;

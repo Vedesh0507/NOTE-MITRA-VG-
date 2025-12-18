@@ -1,11 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/context/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Upload, FileText, X, CheckCircle, AlertCircle, Sparkles, Loader2 } from 'lucide-react';
 import { notesAPI } from '@/lib/api';
+import { BRANCHES, SEMESTERS, getSubjectsForBranchAndSemester, getBranchShortName } from '@/lib/curriculum';
 
 export default function UploadPage() {
   const router = useRouter();
@@ -28,9 +29,16 @@ export default function UploadPage() {
     tags: ''
   });
 
-  const subjects = ['Mathematics', 'Physics', 'Chemistry', 'Computer Science', 'Electronics', 'Mechanical', 'Civil', 'Electrical', 'Biology', 'English'];
-  const semesters = ['1', '2', '3', '4', '5', '6', '7', '8'];
-  const branches = ['Computer Science', 'Electronics', 'Mechanical', 'Civil', 'Electrical', 'IT', 'Chemical', 'Biotechnology'];
+  // Get dynamic subjects based on selected branch and semester
+  const availableSubjects = useMemo(() => {
+    if (!formData.branch || !formData.semester) return [];
+    return getSubjectsForBranchAndSemester(formData.branch, formData.semester);
+  }, [formData.branch, formData.semester]);
+
+  // Reset subject when branch or semester changes
+  useEffect(() => {
+    setFormData(prev => ({ ...prev, subject: '' }));
+  }, [formData.branch, formData.semester]);
 
   // Redirect if not logged in
   if (!user) {
@@ -397,50 +405,9 @@ export default function UploadPage() {
               )}
             </div>
 
-            {/* Subject, Semester, Branch Row */}
+            {/* Branch, Semester, Subject Row */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label htmlFor="subject" className="block text-sm font-medium text-gray-700 mb-2">
-                  Subject *
-                </label>
-                <select
-                  id="subject"
-                  name="subject"
-                  value={formData.subject}
-                  onChange={handleInputChange}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  required
-                >
-                  <option value="">Select Subject</option>
-                  {subjects.map((subject) => (
-                    <option key={subject} value={subject}>
-                      {subject}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label htmlFor="semester" className="block text-sm font-medium text-gray-700 mb-2">
-                  Semester *
-                </label>
-                <select
-                  id="semester"
-                  name="semester"
-                  value={formData.semester}
-                  onChange={handleInputChange}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  required
-                >
-                  <option value="">Select Semester</option>
-                  {semesters.map((sem) => (
-                    <option key={sem} value={sem}>
-                      Semester {sem}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
+              {/* Branch - Select First */}
               <div>
                 <label htmlFor="branch" className="block text-sm font-medium text-gray-700 mb-2">
                   Branch *
@@ -454,12 +421,70 @@ export default function UploadPage() {
                   required
                 >
                   <option value="">Select Branch</option>
-                  {branches.map((branch) => (
+                  {BRANCHES.map((branch) => (
                     <option key={branch} value={branch}>
-                      {branch}
+                      {getBranchShortName(branch)} - {branch}
                     </option>
                   ))}
                 </select>
+              </div>
+
+              {/* Semester - Select Second */}
+              <div>
+                <label htmlFor="semester" className="block text-sm font-medium text-gray-700 mb-2">
+                  Semester *
+                </label>
+                <select
+                  id="semester"
+                  name="semester"
+                  value={formData.semester}
+                  onChange={handleInputChange}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  required
+                >
+                  <option value="">Select Semester</option>
+                  {SEMESTERS.map((sem) => (
+                    <option key={sem} value={sem}>
+                      Semester {sem}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Subject - Dynamic based on Branch + Semester */}
+              <div>
+                <label htmlFor="subject" className="block text-sm font-medium text-gray-700 mb-2">
+                  Subject *
+                </label>
+                <select
+                  id="subject"
+                  name="subject"
+                  value={formData.subject}
+                  onChange={handleInputChange}
+                  disabled={!formData.branch || !formData.semester}
+                  className={`w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                    (!formData.branch || !formData.semester) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''
+                  }`}
+                  required
+                >
+                  {(!formData.branch || !formData.semester) ? (
+                    <option value="">Select branch & semester first</option>
+                  ) : (
+                    <>
+                      <option value="">Select Subject</option>
+                      {availableSubjects.map((subject) => (
+                        <option key={subject} value={subject}>
+                          {subject}
+                        </option>
+                      ))}
+                    </>
+                  )}
+                </select>
+                {formData.branch && formData.semester && availableSubjects.length > 0 && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    {availableSubjects.length} subjects available
+                  </p>
+                )}
               </div>
             </div>
 
