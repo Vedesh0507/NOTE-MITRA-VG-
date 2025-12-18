@@ -695,6 +695,294 @@ const sendPasswordResetEmail = async (email, resetUrl, userName) => {
   }
 };
 
+// ============================
+// AI CHAT ENDPOINT - GEMINI API
+// ============================
+
+// Rate limiter store for AI chat
+const aiChatRateLimitStore = new Map();
+
+// AI Chat rate limiter middleware
+const aiChatRateLimiter = (req, res, next) => {
+  const userId = req.body?.userId || req.ip || 'anonymous';
+  const key = `ai-chat:${userId}`;
+  const now = Date.now();
+  const windowMs = 60 * 60 * 1000; // 1 hour window
+  const maxRequests = 30; // 30 requests per hour
+  const cooldownMs = 10 * 1000; // 10 second cooldown between messages
+
+  let entry = aiChatRateLimitStore.get(key);
+
+  if (!entry || entry.resetTime < now) {
+    entry = { 
+      count: 1, 
+      resetTime: now + windowMs,
+      lastRequest: now 
+    };
+    aiChatRateLimitStore.set(key, entry);
+    return next();
+  }
+
+  // Check cooldown
+  if (now - entry.lastRequest < cooldownMs) {
+    const waitTime = Math.ceil((cooldownMs - (now - entry.lastRequest)) / 1000);
+    return res.status(429).json({
+      error: 'Please wait before sending another message.',
+      retryAfter: waitTime,
+      type: 'cooldown'
+    });
+  }
+
+  entry.count++;
+  entry.lastRequest = now;
+
+  if (entry.count > maxRequests) {
+    const retryAfter = Math.ceil((entry.resetTime - now) / 1000 / 60);
+    return res.status(429).json({
+      error: `Rate limit exceeded. You have used all ${maxRequests} AI queries this hour.`,
+      retryAfter: retryAfter,
+      type: 'hourly_limit',
+      remaining: 0
+    });
+  }
+
+  // Add remaining queries to response
+  res.locals.aiRateLimit = {
+    remaining: maxRequests - entry.count,
+    resetTime: entry.resetTime
+  };
+
+  next();
+};
+
+// Gemini API call function
+const callGeminiAPI = async (message, pageText, conversationHistory = []) => {
+  const apiKey = process.env.GEMINI_API_KEY;
+  
+  if (!apiKey) {
+    throw new Error('Gemini API key not configured');
+  }
+
+  // Build system context
+  let systemContext = '';
+  if (pageText && pageText.trim().length > 50) {
+    systemContext = `You are a helpful study assistant integrated into a PDF reader application. 
+The student is currently reading a PDF document. Here is the relevant content from the current page:
+
+---PDF CONTENT START---
+${pageText.substring(0, 4000)}
+---PDF CONTENT END---
+
+Instructions:
+1. Answer the student's question using the PDF content above when relevant
+2. If the question is related to the PDF content, cite specific parts of it
+3. If the question is not covered in the PDF, provide a general academic explanation
+4. Be concise, clear, and educational
+5. Use examples when helpful
+6. Format your response with bullet points or numbered lists when appropriate`;
+  } else {
+    systemContext = `You are a helpful study assistant for college students.
+Note: You don't have access to specific PDF content right now. The student may be asking a general academic question.
+
+Instructions:
+1. Provide clear, educational answers
+2. Be concise and helpful
+3. Use examples when appropriate
+4. If you're unsure about something specific to their course material, let them know
+5. Format your response with bullet points or numbered lists when appropriate`;
+  }
+
+  // Build conversation for context
+  const contents = [];
+  
+  // Add system context as first user message
+  contents.push({
+    role: 'user',
+    parts: [{ text: systemContext + '\n\nStudent question: ' + message }]
+  });
+
+  // Gemini API endpoint - Using gemini-2.0-flash (gemini-1.5-flash is deprecated)
+  const modelName = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+
+  console.log(`🤖 Calling Gemini API with model: ${modelName}`);
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      contents: contents,
+      generationConfig: {
+        temperature: 0.7,
+        topK: 40,
+        topP: 0.95,
+        maxOutputTokens: 1024,
+      },
+      safetySettings: [
+        { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+        { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' }
+      ]
+    })
+  });
+
+  if (!response.ok) {
+    const errorData = await response.text();
+    console.error('❌ Gemini API error - Status:', response.status);
+    console.error('❌ Gemini API error - Response:', errorData);
+    
+    // Parse error for better messaging
+    try {
+      const errorJson = JSON.parse(errorData);
+      if (response.status === 429) {
+        const retryMatch = errorData.match(/retry in ([\d.]+)s/i);
+        const retryAfter = retryMatch ? Math.ceil(parseFloat(retryMatch[1])) : 60;
+        const error = new Error('AI service rate limit exceeded. Please try again later.');
+        error.code = 'RATE_LIMIT';
+        error.retryAfter = retryAfter;
+        throw error;
+      } else if (response.status === 404) {
+        const error = new Error(`AI model "${modelName}" not found. Please check configuration.`);
+        error.code = 'MODEL_NOT_FOUND';
+        throw error;
+      } else if (response.status === 400) {
+        const error = new Error('Invalid request to AI service.');
+        error.code = 'BAD_REQUEST';
+        throw error;
+      } else if (response.status === 403) {
+        const error = new Error('AI API key is invalid or expired.');
+        error.code = 'UNAUTHORIZED';
+        throw error;
+      }
+    } catch (parseError) {
+      if (parseError.code) throw parseError; // Re-throw our custom errors
+    }
+    
+    throw new Error('AI service temporarily unavailable');
+  }
+
+  const data = await response.json();
+  
+  // Check for blocked content
+  if (data.promptFeedback?.blockReason) {
+    console.warn('⚠️ Gemini blocked the request:', data.promptFeedback.blockReason);
+    const error = new Error('Your question was blocked by content filters. Please rephrase it.');
+    error.code = 'CONTENT_BLOCKED';
+    throw error;
+  }
+  
+  if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) {
+    console.error('❌ Invalid Gemini response structure:', JSON.stringify(data, null, 2));
+    throw new Error('Invalid response from AI service');
+  }
+
+  console.log('✅ Gemini API response received successfully');
+  return data.candidates[0].content.parts[0].text;
+};
+
+// AI Chat endpoint
+app.post('/api/ai/chat', aiChatRateLimiter, async (req, res) => {
+  try {
+    const { message, pageText, userId, noteId } = req.body;
+
+    // Validate message
+    if (!message || typeof message !== 'string') {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+
+    const trimmedMessage = message.trim();
+    if (trimmedMessage.length === 0) {
+      return res.status(400).json({ error: 'Message cannot be empty' });
+    }
+
+    if (trimmedMessage.length > 2000) {
+      return res.status(400).json({ error: 'Message is too long (max 2000 characters)' });
+    }
+
+    // Check if Gemini API is configured
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(503).json({ 
+        error: 'AI service not configured',
+        fallback: true,
+        response: 'I apologize, but the AI service is currently not configured. Please contact support.'
+      });
+    }
+
+    console.log(`🤖 AI Chat request from ${userId || 'anonymous'}: "${trimmedMessage.substring(0, 50)}..."`);
+
+    // Call Gemini API
+    const aiResponse = await callGeminiAPI(trimmedMessage, pageText);
+
+    // Log successful response
+    console.log(`✅ AI response generated (${aiResponse.length} chars)`);
+
+    // Return response with rate limit info
+    res.json({
+      response: aiResponse,
+      hasContext: !!(pageText && pageText.trim().length > 50),
+      rateLimit: res.locals.aiRateLimit
+    });
+
+  } catch (error) {
+    console.error('❌ AI Chat error:', error.message);
+    console.error('❌ Error code:', error.code || 'UNKNOWN');
+    
+    // Build specific error response based on error type
+    let statusCode = 500;
+    let errorMessage = 'I apologize, but I encountered an error processing your request. Please try again in a moment.';
+    let errorType = 'unknown';
+    
+    if (error.code === 'RATE_LIMIT') {
+      statusCode = 429;
+      errorMessage = `The AI service is currently busy. Please wait ${error.retryAfter || 60} seconds and try again.`;
+      errorType = 'rate_limit';
+    } else if (error.code === 'MODEL_NOT_FOUND') {
+      statusCode = 503;
+      errorMessage = 'The AI model is currently unavailable. Please contact support.';
+      errorType = 'model_error';
+    } else if (error.code === 'UNAUTHORIZED') {
+      statusCode = 503;
+      errorMessage = 'AI service authentication failed. Please contact support.';
+      errorType = 'auth_error';
+    } else if (error.code === 'CONTENT_BLOCKED') {
+      statusCode = 400;
+      errorMessage = error.message;
+      errorType = 'content_blocked';
+    } else if (error.code === 'BAD_REQUEST') {
+      statusCode = 400;
+      errorMessage = 'There was an issue with your request. Please try rephrasing your question.';
+      errorType = 'bad_request';
+    }
+    
+    // Return detailed error response
+    res.status(statusCode).json({
+      success: false,
+      error: error.message || 'Failed to get AI response',
+      errorType: errorType,
+      message: errorMessage,
+      fallback: true,
+      response: errorMessage,
+      retryAfter: error.retryAfter || null
+    });
+  }
+});
+
+// Health check endpoint for AI service
+app.get('/api/ai/status', (req, res) => {
+  const hasGeminiKey = !!(process.env.GEMINI_API_KEY);
+  res.json({
+    configured: hasGeminiKey,
+    service: 'Gemini',
+    rateLimit: {
+      maxPerHour: 30,
+      cooldownSeconds: 10
+    }
+  });
+});
+
 // Forgot Password route
 app.post('/api/auth/forgot-password', forgotPasswordRateLimiter, async (req, res) => {
   try {

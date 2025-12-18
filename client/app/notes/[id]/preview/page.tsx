@@ -193,19 +193,36 @@ Just type your question below!`,
 
     } catch (error: any) {
       console.error('AI Chat error:', error);
+      console.error('AI Chat error response:', error.response?.data);
 
       let errorMessage = 'Sorry, I encountered an error. Please try again.';
 
       if (error.response?.status === 429) {
         const data = error.response.data;
-        if (data.type === 'cooldown') {
+        if (data.type === 'cooldown' || data.errorType === 'cooldown') {
           errorMessage = `Please wait ${data.retryAfter} seconds before sending another message.`;
           setCooldown(data.retryAfter);
-        } else if (data.type === 'hourly_limit') {
+        } else if (data.type === 'hourly_limit' || data.errorType === 'hourly_limit') {
           errorMessage = `You've reached the hourly limit of AI queries. Please try again in ${data.retryAfter} minutes.`;
+        } else if (data.errorType === 'rate_limit') {
+          errorMessage = data.message || `The AI service is currently busy. Please wait ${data.retryAfter || 60} seconds and try again.`;
+          if (data.retryAfter) setCooldown(data.retryAfter);
         }
+      } else if (error.response?.status === 503) {
+        // Service unavailable - configuration or model issues
+        errorMessage = error.response.data?.message || 'The AI service is temporarily unavailable. Please try again later.';
+      } else if (error.response?.status === 400) {
+        // Bad request - content blocked or invalid input
+        errorMessage = error.response.data?.message || 'There was an issue with your question. Please try rephrasing it.';
       } else if (error.response?.data?.response) {
+        // Use the fallback response from backend
         errorMessage = error.response.data.response;
+      } else if (error.response?.data?.message) {
+        // Use the message from backend
+        errorMessage = error.response.data.message;
+      } else if (!error.response) {
+        // Network error - no response from server
+        errorMessage = 'Unable to connect to the AI service. Please check your internet connection.';
       }
 
       const errorResponse: ChatMessage = {
