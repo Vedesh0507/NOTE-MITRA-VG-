@@ -2,7 +2,8 @@ import axios from 'axios';
 
 // Detect if accessing from local network
 const getApiUrl = () => {
-  if (typeof window !== 'undefined') {
+  // Only access window.location on client side
+  if (typeof window !== 'undefined' && typeof window.location !== 'undefined') {
     const hostname = window.location.hostname;
     if (hostname === '192.168.1.35' || hostname === '192.168.245.192') {
       return `http://${hostname}:5000/api`;
@@ -11,19 +12,21 @@ const getApiUrl = () => {
   return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api';
 };
 
-const API_URL = getApiUrl();
+// Use a getter to lazily evaluate API_URL
+const getBaseURL = () => getApiUrl();
 
-// Create axios instance
+// Create axios instance with dynamic baseURL
 const api = axios.create({
-  baseURL: API_URL,
   headers: {
     'Content-Type': 'application/json',
   },
 });
 
-// Request interceptor to add auth token
+// Set baseURL dynamically on each request
 api.interceptors.request.use(
   (config) => {
+    config.baseURL = getBaseURL();
+    
     if (typeof window !== 'undefined') {
       const token = localStorage.getItem('token');
       if (token) {
@@ -243,4 +246,4 @@ export const aiAPI = {
 };
 
 // Get base API URL for direct fetch calls
-export const getAPIBaseUrl = () => API_URL;
+export const getAPIBaseUrl = () => getApiUrl();
