@@ -21,7 +21,10 @@ app.use(cors({
   origin: [
     'http://localhost:3000',
     'http://192.168.1.35:3000',
-    'http://192.168.245.192:3000'
+    'http://192.168.245.192:3000',
+    'https://notemitra.vercel.app',
+    'https://notemitra-git-main-notemitras-projects.vercel.app',
+    /\.vercel\.app$/
   ],
   credentials: true
 }));
