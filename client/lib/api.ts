@@ -116,8 +116,9 @@ export const authAPI = {
 // Notes API
 export const notesAPI = {
   uploadPDF: (formData: FormData) => {
-    console.log('📡 API Base URL:', API_URL);
-    console.log('📡 Full URL:', `${API_URL}/notes/upload-pdf`);
+    const baseUrl = getApiUrl();
+    console.log('📡 API Base URL:', baseUrl);
+    console.log('📡 Full URL:', `${baseUrl}/notes/upload-pdf`);
     // Don't set Content-Type - axios will automatically set it with proper boundary for FormData
     return api.post('/notes/upload-pdf', formData);
   },
@@ -167,7 +168,8 @@ export const notesAPI = {
   
   // Download file by note ID - returns blob or JSON with downloadUrl
   downloadNote: async (id: string) => {
-    const response = await fetch(`${API_URL}/notes/${id}/download`, {
+    const baseUrl = getApiUrl();
+    const response = await fetch(`${baseUrl}/notes/${id}/download`, {
       method: 'GET',
       headers: {
         'Accept': 'application/pdf, application/json',
