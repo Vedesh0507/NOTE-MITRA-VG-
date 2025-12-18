@@ -280,10 +280,13 @@ export default function BrowsePage() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {filteredNotes.map((note) => (
+            {filteredNotes.map((note) => {
+              const noteId = note.id || note._id;
+              if (!noteId) return null;
+              return (
               <div
-                key={note.id || note._id}
-                onClick={() => handleNoteClick(note.id || note._id)}
+                key={noteId}
+                onClick={() => handleNoteClick(noteId)}
                 className="bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow cursor-pointer overflow-hidden border border-gray-200"
               >
                 {/* Note Header */}
@@ -336,7 +339,8 @@ export default function BrowsePage() {
                   </div>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
