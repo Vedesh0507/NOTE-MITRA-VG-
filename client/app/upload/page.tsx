@@ -10,7 +10,7 @@ import { BRANCHES, SEMESTERS, getSubjectsForBranchAndSemester, getBranchShortNam
 
 export default function UploadPage() {
   const router = useRouter();
-  const { user, refreshUser } = useAuth();
+  const { user, loading: authLoading, refreshUser } = useAuth();
   const [uploading, setUploading] = useState(false);
   const [generatingDesc, setGeneratingDesc] = useState(false);
   const [error, setError] = useState('');
@@ -18,6 +18,7 @@ export default function UploadPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [mounted, setMounted] = useState(false);
 
   const [formData, setFormData] = useState({
     title: '',
@@ -40,9 +41,32 @@ export default function UploadPage() {
     setFormData(prev => ({ ...prev, subject: '' }));
   }, [formData.branch, formData.semester]);
 
-  // Redirect if not logged in
+  // Mark component as mounted (client-side only)
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  // Redirect if not logged in - only after mounting and auth check complete
+  useEffect(() => {
+    if (mounted && !authLoading && !user) {
+      router.push('/auth/signin');
+    }
+  }, [mounted, authLoading, user, router]);
+
+  // Show loading state during SSR or auth check
+  if (!mounted || authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="h-8 w-8 animate-spin mx-auto text-blue-600" />
+          <p className="mt-4 text-gray-600">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show redirect message if not logged in
   if (!user) {
-    router.push('/auth/signin');
     return (
       <div className="min-h-screen flex items-center justify-center">
         <p className="text-gray-600">Please sign in to upload notes...</p>
