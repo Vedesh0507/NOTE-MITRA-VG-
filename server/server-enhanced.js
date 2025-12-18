@@ -606,8 +606,9 @@ const forgotPasswordRateLimiter = (req, res, next) => {
 
 // Email transporter setup
 let emailTransporter = null;
+let emailConfigured = false;
 
-const setupEmailTransporter = () => {
+const setupEmailTransporter = async () => {
   const smtpUser = process.env.SMTP_USER;
   const smtpPass = process.env.SMTP_PASS;
   
@@ -625,19 +626,44 @@ const setupEmailTransporter = () => {
       auth: {
         user: smtpUser,
         pass: smtpPass
+      },
+      // CRITICAL: Add timeouts to prevent hanging
+      connectionTimeout: 10000, // 10 seconds to establish connection
+      greetingTimeout: 10000,   // 10 seconds for greeting
+      socketTimeout: 15000,     // 15 seconds for socket inactivity
+      // Pool settings for better reliability
+      pool: false,
+      maxConnections: 1,
+      // TLS settings for Gmail
+      tls: {
+        rejectUnauthorized: false // Allow self-signed certs in development
       }
     });
-    console.log('✅ Email service configured');
+    
+    // Verify SMTP connection at startup (with timeout)
+    console.log('📧 Verifying SMTP connection...');
+    const verifyPromise = transporter.verify();
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('SMTP verification timeout')), 10000)
+    );
+    
+    await Promise.race([verifyPromise, timeoutPromise]);
+    console.log('✅ Email service configured and verified');
+    emailConfigured = true;
     return transporter;
   } catch (error) {
     console.log('⚠️  Email setup failed:', error.message);
+    console.log('   Gmail SMTP requires an App Password (not regular password)');
+    console.log('   Get one at: https://myaccount.google.com/apppasswords');
+    emailConfigured = false;
     return null;
   }
 };
 
-// Send password reset email function
+// Send password reset email function with timeout
 const sendPasswordResetEmail = async (email, resetUrl, userName) => {
-  if (!emailTransporter) {
+  if (!emailTransporter || !emailConfigured) {
+    console.log('📧 Email transporter not available, skipping email send');
     return false;
   }
   
@@ -689,11 +715,18 @@ const sendPasswordResetEmail = async (email, resetUrl, userName) => {
   };
 
   try {
-    await emailTransporter.sendMail(mailOptions);
+    // Send email with timeout to prevent hanging
+    const sendPromise = emailTransporter.sendMail(mailOptions);
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Email send timeout after 15 seconds')), 15000)
+    );
+    
+    await Promise.race([sendPromise, timeoutPromise]);
     console.log(`✅ Password reset email sent to ${email}`);
     return true;
   } catch (error) {
     console.error('❌ Failed to send email:', error.message);
+    // Don't throw - just return false so the API still responds
     return false;
   }
 };
@@ -2882,8 +2915,8 @@ async function startServer() {
     googleAuthEnabled = configureGoogleAuth();
     console.log('[DEBUG] Google Auth configured:', googleAuthEnabled);
 
-    // Setup email transporter
-    emailTransporter = setupEmailTransporter();
+    // Setup email transporter (async with verification)
+    emailTransporter = await setupEmailTransporter();
 
     console.log('[DEBUG] Starting Express server on port', PORT);
     
