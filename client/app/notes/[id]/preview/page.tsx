@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/context/AuthContext';
 import { Button } from '@/components/ui/button';
@@ -20,7 +20,10 @@ import {
   AlertCircle,
   Info,
   Maximize2,
-  Minimize2
+  Minimize2,
+  FileText,
+  ChevronUp,
+  ChevronDown
 } from 'lucide-react';
 import { notesAPI, aiAPI, getAPIBaseUrl } from '@/lib/api';
 
@@ -33,6 +36,7 @@ interface Note {
   semester: string;
   branch: string;
   fileId?: string;
+  fileName?: string;
 }
 
 interface ChatMessage {
@@ -59,7 +63,8 @@ export default function PDFPreviewPage() {
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   // Chat State
-  const [chatOpen, setChatOpen] = useState(true);
+  const [chatOpen, setChatOpen] = useState(false); // Default closed on mobile
+  const [chatExpanded, setChatExpanded] = useState(false); // For mobile bottom sheet
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputMessage, setInputMessage] = useState('');
   const [sendingMessage, setSendingMessage] = useState(false);
@@ -68,10 +73,23 @@ export default function PDFPreviewPage() {
     remaining?: number;
   }>({ configured: true });
   const [cooldown, setCooldown] = useState(0);
+  
+  // Mobile detection
+  const [isMobile, setIsMobile] = useState(false);
 
   // Refs
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  // Detect mobile on mount and window resize
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
 
   // Fetch note details
   useEffect(() => {
@@ -253,9 +271,65 @@ Just type your question below!`,
       
       const apiBase = getAPIBaseUrl();
       const downloadUrl = `${apiBase}/notes/${downloadNoteId}/download`;
-      window.open(downloadUrl, '_blank');
+      
+      // Detect iOS Safari
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+      const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+      
+      if (isMobile && isIOS && isSafari) {
+        // iOS Safari: Direct fetch and save as blob
+        try {
+          const response = await fetch(downloadUrl);
+          if (!response.ok) throw new Error('Download failed');
+          
+          const blob = await response.blob();
+          const filename = note.fileName || `${note.title}.pdf`;
+          
+          // Create a temporary link
+          const url = window.URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = filename;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          window.URL.revokeObjectURL(url);
+        } catch (err) {
+          // Fallback: Open in new tab for iOS
+          window.location.href = downloadUrl;
+        }
+      } else if (isMobile) {
+        // Android and other mobile: Use fetch + blob
+        try {
+          const response = await fetch(downloadUrl);
+          if (!response.ok) throw new Error('Download failed');
+          
+          const blob = await response.blob();
+          const filename = note.fileName || `${note.title}.pdf`;
+          
+          const url = window.URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = filename;
+          link.style.display = 'none';
+          document.body.appendChild(link);
+          link.click();
+          
+          setTimeout(() => {
+            document.body.removeChild(link);
+            window.URL.revokeObjectURL(url);
+          }, 100);
+        } catch (err) {
+          // Fallback: Open in new tab
+          window.open(downloadUrl, '_blank');
+        }
+      } else {
+        // Desktop: Open in new tab
+        window.open(downloadUrl, '_blank');
+      }
     } catch (error) {
       console.error('Download error:', error);
+      alert('Failed to download. Please try again.');
     }
   };
 
@@ -264,7 +338,17 @@ Just type your question below!`,
 
   const toggleFullscreen = () => {
     setIsFullscreen(!isFullscreen);
-    setChatOpen(!isFullscreen);
+    if (!isFullscreen) setChatOpen(false);
+  };
+
+  // Toggle chat for mobile (bottom sheet) vs desktop (side panel)
+  const toggleChat = () => {
+    if (isMobile) {
+      setChatExpanded(!chatExpanded);
+      if (!chatOpen) setChatOpen(true);
+    } else {
+      setChatOpen(!chatOpen);
+    }
   };
 
   if (loading) {
@@ -290,28 +374,30 @@ Just type your question below!`,
   }
 
   return (
-    <div className="h-screen flex flex-col bg-gray-900">
-      {/* Top Toolbar */}
-      <div className="bg-gray-800 border-b border-gray-700 px-4 py-2 flex items-center justify-between">
-        <div className="flex items-center gap-4">
+    <div className="h-screen flex flex-col bg-gray-900 overflow-hidden">
+      {/* Top Toolbar - Mobile-first responsive */}
+      <div className="bg-gray-800 border-b border-gray-700 px-2 sm:px-4 py-2 flex items-center justify-between flex-shrink-0">
+        {/* Left side - Back and title */}
+        <div className="flex items-center gap-2 sm:gap-4 min-w-0 flex-1">
           <Button
             variant="ghost"
             size="sm"
             onClick={() => router.back()}
-            className="text-gray-300 hover:text-white hover:bg-gray-700"
+            className="text-gray-300 hover:text-white hover:bg-gray-700 flex-shrink-0 p-2 sm:px-3"
           >
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Back
+            <ArrowLeft className="w-4 h-4 sm:mr-2" />
+            <span className="hidden sm:inline">Back</span>
           </Button>
-          <div className="text-white">
-            <h1 className="font-medium truncate max-w-md">{note.title}</h1>
-            <p className="text-xs text-gray-400">{note.subject} • Semester {note.semester}</p>
+          <div className="text-white min-w-0">
+            <h1 className="font-medium truncate text-sm sm:text-base max-w-[120px] sm:max-w-md">{note.title}</h1>
+            <p className="text-xs text-gray-400 truncate">{note.subject} • Sem {note.semester}</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          {/* Zoom Controls */}
-          <div className="flex items-center gap-1 bg-gray-700 rounded-lg px-2 py-1">
+        {/* Right side - Actions */}
+        <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
+          {/* Zoom Controls - Hidden on mobile */}
+          <div className="hidden sm:flex items-center gap-1 bg-gray-700 rounded-lg px-2 py-1">
             <Button
               variant="ghost"
               size="sm"
@@ -331,22 +417,22 @@ Just type your question below!`,
             </Button>
           </div>
 
-          {/* Toggle Fullscreen */}
+          {/* Toggle Fullscreen - Hidden on mobile */}
           <Button
             variant="ghost"
             size="sm"
             onClick={toggleFullscreen}
-            className="text-gray-300 hover:text-white hover:bg-gray-700"
+            className="hidden sm:flex text-gray-300 hover:text-white hover:bg-gray-700"
           >
             {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
           </Button>
 
-          {/* Toggle Chat */}
-          {!isFullscreen && (
+          {/* Toggle Chat - Desktop only */}
+          {!isFullscreen && !isMobile && (
             <Button
               variant={chatOpen ? "default" : "ghost"}
               size="sm"
-              onClick={() => setChatOpen(!chatOpen)}
+              onClick={toggleChat}
               className={chatOpen ? "" : "text-gray-300 hover:text-white hover:bg-gray-700"}
             >
               <MessageSquare className="w-4 h-4 mr-2" />
@@ -359,35 +445,216 @@ Just type your question below!`,
             variant="ghost"
             size="sm"
             onClick={handleDownload}
-            className="text-gray-300 hover:text-white hover:bg-gray-700"
+            className="text-gray-300 hover:text-white hover:bg-gray-700 p-2 sm:px-3"
+            title="Download PDF"
           >
             <Download className="w-4 h-4" />
           </Button>
         </div>
       </div>
 
-      {/* Main Content Area */}
-      <div className="flex-1 flex overflow-hidden">
+      {/* Main Content Area - Responsive */}
+      <div className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
         {/* PDF Viewer */}
-        <div className={`flex-1 bg-gray-800 overflow-auto ${isFullscreen ? 'w-full' : chatOpen ? 'w-[65%]' : 'w-full'}`}>
-          <div className="h-full flex items-center justify-center p-4">
+        <div className={`
+          flex-1 bg-gray-800 overflow-auto
+          ${isMobile ? 'h-full' : isFullscreen ? 'w-full' : chatOpen ? 'md:w-[60%] lg:w-[65%]' : 'w-full'}
+        `}>
+          <div className="h-full flex items-start justify-center p-2 sm:p-4">
             <iframe
               ref={iframeRef}
               src={pdfUrl}
-              className="w-full h-full rounded-lg border border-gray-700"
+              className="w-full h-full rounded-lg border border-gray-700 bg-white"
               style={{
-                transform: `scale(${zoom / 100})`,
-                transformOrigin: 'center center',
-                minHeight: '100%'
+                transform: isMobile ? 'none' : `scale(${zoom / 100})`,
+                transformOrigin: 'top center',
+                minHeight: isMobile ? 'calc(100vh - 140px)' : '100%'
               }}
               title="PDF Preview"
             />
           </div>
         </div>
 
-        {/* AI Chat Panel */}
-        {chatOpen && !isFullscreen && (
-          <div className="w-[35%] min-w-[350px] max-w-[500px] bg-white border-l border-gray-200 flex flex-col">
+        {/* Mobile: Floating AI Chat Button */}
+        {isMobile && !chatExpanded && (
+          <button
+            onClick={toggleChat}
+            className="fixed bottom-4 right-4 z-50 bg-gradient-to-r from-blue-600 to-purple-600 text-white p-4 rounded-full shadow-lg flex items-center gap-2 active:scale-95 transition-transform"
+          >
+            <Bot className="w-6 h-6" />
+            <span className="text-sm font-medium">AI Chat</span>
+          </button>
+        )}
+
+        {/* Mobile: Bottom Sheet Chat */}
+        {isMobile && chatOpen && (
+          <div 
+            className={`
+              fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-2xl shadow-2xl
+              transition-all duration-300 ease-out
+              ${chatExpanded ? 'h-[85vh]' : 'h-[50vh]'}
+            `}
+          >
+            {/* Drag Handle */}
+            <div className="flex justify-center py-2">
+              <button
+                onClick={() => setChatExpanded(!chatExpanded)}
+                className="w-12 h-1 bg-gray-300 rounded-full"
+              />
+            </div>
+
+            {/* Chat Header */}
+            <div className="bg-gradient-to-r from-blue-600 to-purple-600 px-4 py-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Bot className="w-5 h-5 text-white" />
+                <div>
+                  <h2 className="text-white font-semibold text-sm">AI Study Assistant</h2>
+                  <p className="text-blue-100 text-xs">
+                    {aiStatus.remaining !== undefined ? `${aiStatus.remaining} queries left` : 'Ready to help'}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setChatExpanded(!chatExpanded)}
+                  className="text-white hover:bg-white/20 p-1"
+                >
+                  {chatExpanded ? <ChevronDown className="w-5 h-5" /> : <ChevronUp className="w-5 h-5" />}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setChatOpen(false);
+                    setChatExpanded(false);
+                  }}
+                  className="text-white hover:bg-white/20 p-1"
+                >
+                  <X className="w-5 h-5" />
+                </Button>
+              </div>
+            </div>
+
+            {/* Context Notice */}
+            <div className="px-3 py-2 bg-yellow-50 border-b border-yellow-200">
+              <div className="flex items-start gap-2">
+                <Info className="w-4 h-4 text-yellow-600 mt-0.5 flex-shrink-0" />
+                <p className="text-xs text-yellow-700">
+                  AI answers are based on general knowledge.
+                </p>
+              </div>
+            </div>
+
+            {/* Messages Container */}
+            <div
+              ref={chatContainerRef}
+              className="flex-1 overflow-y-auto p-3 space-y-3"
+              style={{ height: chatExpanded ? 'calc(85vh - 200px)' : 'calc(50vh - 200px)' }}
+            >
+              {messages.map((message) => (
+                <div
+                  key={message.id}
+                  className={`flex gap-2 ${message.role === 'user' ? 'flex-row-reverse' : ''}`}
+                >
+                  {/* Avatar */}
+                  <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 ${
+                    message.role === 'user'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gradient-to-r from-purple-500 to-pink-500 text-white'
+                  }`}>
+                    {message.role === 'user' ? (
+                      <User className="w-3.5 h-3.5" />
+                    ) : (
+                      <Bot className="w-3.5 h-3.5" />
+                    )}
+                  </div>
+
+                  {/* Message Bubble */}
+                  <div className={`max-w-[85%] ${message.role === 'user' ? 'text-right' : ''}`}>
+                    <div className={`rounded-2xl px-3 py-2 ${
+                      message.role === 'user'
+                        ? 'bg-blue-600 text-white rounded-tr-sm'
+                        : 'bg-gray-100 text-gray-800 rounded-tl-sm'
+                    }`}>
+                      <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                    </div>
+                  </div>
+                </div>
+              ))}
+
+              {/* Typing Indicator */}
+              {sendingMessage && (
+                <div className="flex gap-2">
+                  <div className="w-7 h-7 rounded-full bg-gradient-to-r from-purple-500 to-pink-500 flex items-center justify-center">
+                    <Bot className="w-3.5 h-3.5 text-white" />
+                  </div>
+                  <div className="bg-gray-100 rounded-2xl rounded-tl-sm px-4 py-3">
+                    <div className="flex gap-1">
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Input Area */}
+            <div className="border-t border-gray-200 p-3 bg-white">
+              {/* Cooldown Warning */}
+              {cooldown > 0 && (
+                <div className="mb-2 text-xs text-orange-600 flex items-center gap-1">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  Wait {cooldown}s before next message
+                </div>
+              )}
+
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={inputMessage}
+                  onChange={(e) => setInputMessage(e.target.value)}
+                  onKeyPress={handleKeyPress}
+                  placeholder="Ask a question..."
+                  disabled={sendingMessage || cooldown > 0}
+                  className="flex-1 px-3 py-2 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm disabled:bg-gray-100"
+                />
+                <Button
+                  onClick={handleSendMessage}
+                  disabled={!inputMessage.trim() || sendingMessage || cooldown > 0}
+                  size="sm"
+                  className="rounded-full px-4"
+                >
+                  {sendingMessage ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Send className="w-4 h-4" />
+                  )}
+                </Button>
+              </div>
+
+              {/* Quick Suggestions */}
+              <div className="mt-2 flex flex-wrap gap-1">
+                {['Explain this', 'Example', 'Summarize'].map((suggestion) => (
+                  <button
+                    key={suggestion}
+                    onClick={() => setInputMessage(suggestion)}
+                    disabled={sendingMessage}
+                    className="text-xs px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded-full text-gray-600 transition disabled:opacity-50"
+                  >
+                    {suggestion}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Desktop: Side Panel Chat */}
+        {!isMobile && chatOpen && !isFullscreen && (
+          <div className="w-[40%] md:w-[40%] lg:w-[35%] min-w-[300px] max-w-[500px] bg-white border-l border-gray-200 flex flex-col">
             {/* Chat Header */}
             <div className="bg-gradient-to-r from-blue-600 to-purple-600 px-4 py-3 flex items-center justify-between">
               <div className="flex items-center gap-2">
