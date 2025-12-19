@@ -64,7 +64,10 @@ const ADMIN_EMAILS = [
 ];
 
 // MongoDB Schemas (will be used if MongoDB is available)
-let User, Note, SavedNote, PasswordReset;
+let User, Note, SavedNote, PasswordReset, Comment;
+
+// In-memory comments storage (fallback)
+let comments = [];
 
 // Rate limiting store
 const rateLimitStore = new Map();
@@ -284,9 +287,24 @@ async function connectMongoDB() {
     // Compound index to prevent duplicate saves
     savedNoteSchema.index({ userId: 1, noteId: 1 }, { unique: true });
 
+    // Comment Schema for note comments
+    const commentSchema = new mongoose.Schema({
+      noteId: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'Note', index: true },
+      userId: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'User' },
+      userName: { type: String, required: true },
+      text: { type: String, required: true, maxlength: 1000 },
+      isEdited: { type: Boolean, default: false },
+      isDeleted: { type: Boolean, default: false },
+      createdAt: { type: Date, default: Date.now },
+      updatedAt: { type: Date }
+    });
+
+    commentSchema.index({ noteId: 1, createdAt: -1 });
+
     User = mongoose.model('User', userSchema);
     Note = mongoose.model('Note', noteSchema);
     SavedNote = mongoose.model('SavedNote', savedNoteSchema);
+    Comment = mongoose.model('Comment', commentSchema);
     PasswordReset = mongoose.model('PasswordReset', passwordResetSchema);
 
     return true;
@@ -1698,6 +1716,251 @@ app.post('/api/notes/:noteId/report', async (req, res) => {
   }
 });
 
+// ==================== COMMENTS API ====================
+
+// Get comments for a note
+app.get('/api/notes/:noteId/comments', async (req, res) => {
+  try {
+    const { noteId } = req.params;
+    console.log('📝 Fetching comments for note:', noteId);
+
+    if (useMongoDB) {
+      const noteComments = await Comment.find({ 
+        noteId: noteId, 
+        isDeleted: false 
+      })
+        .sort({ createdAt: -1 })
+        .lean();
+      
+      console.log(`✅ Found ${noteComments.length} comments`);
+      res.json({ 
+        comments: noteComments,
+        count: noteComments.length 
+      });
+    } else {
+      // In-memory fallback
+      const noteComments = comments
+        .filter(c => c.noteId === noteId && !c.isDeleted)
+        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      
+      res.json({ 
+        comments: noteComments,
+        count: noteComments.length 
+      });
+    }
+  } catch (error) {
+    console.error('Get comments error:', error);
+    res.status(500).json({ message: 'Failed to fetch comments' });
+  }
+});
+
+// Add a comment to a note (requires authentication)
+app.post('/api/notes/:noteId/comments', async (req, res) => {
+  try {
+    const { noteId } = req.params;
+    const { text } = req.body;
+    
+    // Get user from token
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ message: 'Authentication required' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const jwt = require('jsonwebtoken');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    
+    if (!text || text.trim() === '') {
+      return res.status(400).json({ message: 'Comment text is required' });
+    }
+
+    if (text.length > 1000) {
+      return res.status(400).json({ message: 'Comment must be less than 1000 characters' });
+    }
+
+    console.log('📝 Adding comment to note:', noteId, 'by user:', decoded.userId);
+
+    if (useMongoDB) {
+      // Get user info
+      const user = await User.findById(decoded.userId);
+      if (!user) {
+        return res.status(404).json({ message: 'User not found' });
+      }
+
+      // Check if note exists
+      const note = await Note.findById(noteId);
+      if (!note) {
+        return res.status(404).json({ message: 'Note not found' });
+      }
+
+      // Create comment
+      const newComment = new Comment({
+        noteId: noteId,
+        userId: decoded.userId,
+        userName: user.name,
+        text: text.trim(),
+        createdAt: new Date()
+      });
+
+      await newComment.save();
+      console.log('✅ Comment saved:', newComment._id);
+
+      res.status(201).json({ 
+        message: 'Comment added successfully',
+        comment: {
+          id: newComment._id,
+          noteId: newComment.noteId,
+          userId: newComment.userId,
+          userName: newComment.userName,
+          text: newComment.text,
+          createdAt: newComment.createdAt
+        }
+      });
+    } else {
+      // In-memory fallback
+      const newComment = {
+        id: Date.now().toString(),
+        noteId: noteId,
+        userId: decoded.userId,
+        userName: decoded.name || 'User',
+        text: text.trim(),
+        createdAt: new Date().toISOString()
+      };
+
+      comments.push(newComment);
+      res.status(201).json({ 
+        message: 'Comment added successfully',
+        comment: newComment 
+      });
+    }
+  } catch (error) {
+    console.error('Add comment error:', error);
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({ message: 'Invalid token' });
+    }
+    res.status(500).json({ message: 'Failed to add comment' });
+  }
+});
+
+// Update a comment (requires authentication and ownership)
+app.put('/api/notes/:noteId/comments/:commentId', async (req, res) => {
+  try {
+    const { noteId, commentId } = req.params;
+    const { text } = req.body;
+    
+    // Get user from token
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ message: 'Authentication required' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const jwt = require('jsonwebtoken');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    
+    if (!text || text.trim() === '') {
+      return res.status(400).json({ message: 'Comment text is required' });
+    }
+
+    if (useMongoDB) {
+      const comment = await Comment.findById(commentId);
+      
+      if (!comment || comment.isDeleted) {
+        return res.status(404).json({ message: 'Comment not found' });
+      }
+
+      if (comment.userId.toString() !== decoded.userId) {
+        return res.status(403).json({ message: 'Not authorized to edit this comment' });
+      }
+
+      comment.text = text.trim();
+      comment.isEdited = true;
+      comment.updatedAt = new Date();
+      await comment.save();
+
+      res.json({ 
+        message: 'Comment updated successfully',
+        comment: comment 
+      });
+    } else {
+      const commentIndex = comments.findIndex(c => c.id === commentId && c.noteId === noteId);
+      
+      if (commentIndex === -1) {
+        return res.status(404).json({ message: 'Comment not found' });
+      }
+
+      if (comments[commentIndex].userId !== decoded.userId) {
+        return res.status(403).json({ message: 'Not authorized to edit this comment' });
+      }
+
+      comments[commentIndex].text = text.trim();
+      comments[commentIndex].isEdited = true;
+      comments[commentIndex].updatedAt = new Date().toISOString();
+
+      res.json({ 
+        message: 'Comment updated successfully',
+        comment: comments[commentIndex] 
+      });
+    }
+  } catch (error) {
+    console.error('Update comment error:', error);
+    res.status(500).json({ message: 'Failed to update comment' });
+  }
+});
+
+// Delete a comment (requires authentication and ownership)
+app.delete('/api/notes/:noteId/comments/:commentId', async (req, res) => {
+  try {
+    const { noteId, commentId } = req.params;
+    
+    // Get user from token
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ message: 'Authentication required' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const jwt = require('jsonwebtoken');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+
+    if (useMongoDB) {
+      const comment = await Comment.findById(commentId);
+      
+      if (!comment || comment.isDeleted) {
+        return res.status(404).json({ message: 'Comment not found' });
+      }
+
+      if (comment.userId.toString() !== decoded.userId) {
+        return res.status(403).json({ message: 'Not authorized to delete this comment' });
+      }
+
+      // Soft delete
+      comment.isDeleted = true;
+      await comment.save();
+
+      res.json({ message: 'Comment deleted successfully' });
+    } else {
+      const commentIndex = comments.findIndex(c => c.id === commentId && c.noteId === noteId);
+      
+      if (commentIndex === -1) {
+        return res.status(404).json({ message: 'Comment not found' });
+      }
+
+      if (comments[commentIndex].userId !== decoded.userId) {
+        return res.status(403).json({ message: 'Not authorized to delete this comment' });
+      }
+
+      comments[commentIndex].isDeleted = true;
+      res.json({ message: 'Comment deleted successfully' });
+    }
+  } catch (error) {
+    console.error('Delete comment error:', error);
+    res.status(500).json({ message: 'Failed to delete comment' });
+  }
+});
+
+// ==================== END COMMENTS API ====================
+
 // Get reported notes
 app.get('/api/admin/reports', adminMiddleware, async (req, res) => {
   try {
@@ -2848,19 +3111,13 @@ app.get('/api/notes/:id/download', async (req, res) => {
     const noteId = req.params.id;
 
     if (useMongoDB) {
-      // MongoDB version
-      const note = await Note.findByIdAndUpdate(
-        noteId,
-        { $inc: { downloads: 1 } },
-        { new: true }
-      );
+      // MongoDB version - Just get download URL, don't increment count
+      // (POST /api/notes/:id/download handles tracking separately)
+      const note = await Note.findById(noteId);
 
       if (!note) {
         return res.status(404).json({ message: 'Note not found' });
       }
-
-      // Increment the note uploader's totalDownloads
-      await User.findByIdAndUpdate(note.userId, { $inc: { totalDownloads: 1 } });
 
       // If note has fileId (GridFS), provide download endpoint, otherwise use fileUrl
       if (note.fileId) {
@@ -2873,15 +3130,6 @@ app.get('/api/notes/:id/download', async (req, res) => {
       const note = notes.find(n => n.id === parseInt(noteId));
       if (!note) {
         return res.status(404).json({ message: 'Note not found' });
-      }
-
-      note.downloads += 1;
-
-      // Increment the note uploader's totalDownloads
-      const uploader = users.find(u => u.id === note.userId);
-      if (uploader) {
-        if (!uploader.totalDownloads) uploader.totalDownloads = 0;
-        uploader.totalDownloads += 1;
       }
 
       res.json({ downloadUrl: note.fileUrl || '/sample.pdf' });

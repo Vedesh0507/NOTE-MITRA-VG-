@@ -45,11 +45,12 @@ interface Note {
 }
 
 interface Comment {
-  id: number;
+  id: number | string;
   text: string;
   userName: string;
-  userId: number;
+  userId: number | string;
   createdAt: string;
+  isEdited?: boolean;
 }
 
 export default function NoteDetailPage() {
@@ -112,24 +113,24 @@ export default function NoteDetailPage() {
       
       setNote(fetchedNote);
 
-      // Fetch comments (will implement backend endpoint)
-      // For now, use mock data
-      setComments([
-        {
-          id: 1,
-          text: 'Great notes! Very helpful for exam preparation.',
-          userName: 'Student 1',
-          userId: 2,
-          createdAt: new Date().toISOString()
-        },
-        {
-          id: 2,
-          text: 'Clear explanations and well organized.',
-          userName: 'Student 2',
-          userId: 3,
-          createdAt: new Date().toISOString()
-        }
-      ]);
+      // Fetch real comments from API
+      try {
+        const commentsResponse = await notesAPI.getComments(noteId);
+        const fetchedComments = commentsResponse.data.comments || [];
+        // Map API response to component's Comment interface
+        setComments(fetchedComments.map((c: any) => ({
+          id: c._id || c.id,
+          text: c.text,
+          userName: c.userName,
+          userId: c.userId,
+          createdAt: c.createdAt,
+          isEdited: c.isEdited
+        })));
+        console.log('✅ Fetched', fetchedComments.length, 'comments from API');
+      } catch (commentError) {
+        console.error('Failed to fetch comments:', commentError);
+        setComments([]); // Empty array instead of mock data
+      }
     } catch (error) {
       console.error('Failed to fetch note:', error);
     } finally {
@@ -178,198 +179,115 @@ export default function NoteDetailPage() {
     }
     
     try {
-      // Debug: Log full note object
-      console.log('📥 Starting download for note:', {
-        fullNote: note,
-        noteId: note._id || note.id,
-        note_id: note._id,
-        noteId_direct: note.id,
-        fileId: note.fileId,
-        fileName: note.fileName,
-        title: note.title,
-        allKeys: Object.keys(note)
-      });
+      console.log('📥 Starting download for note:', note.title);
       
-      // Determine note ID - try multiple fields
-      // Priority: _id (MongoDB) > id (in-memory) > noteId param from URL
-      let downloadNoteId = note._id || note.id || noteId;
-      
-      console.log('🔍 Note ID candidates:', {
-        from_id: note._id,
-        from_id_field: note.id,
-        from_url_param: noteId,
-        selected: downloadNoteId
-      });
+      // Determine note ID
+      const downloadNoteId = note._id || note.id || noteId;
       
       if (!downloadNoteId) {
-        console.error('❌ No valid note ID found in:', {
-          note_id: note._id,
-          note_id_field: note.id,
-          url_param: noteId,
-          note_object: note
-        });
-        throw new Error('Note ID not found. Cannot identify note. Please refresh the page.');
+        throw new Error('Note ID not found. Please refresh the page.');
       }
       
-      // Convert to string safely
       const noteIdString = String(downloadNoteId).trim();
-      
-      if (!noteIdString) {
-        throw new Error('Invalid note ID format.');
-      }
-      
       console.log('✅ Using note ID:', noteIdString);
       
-      // Track download (don't let tracking failure stop download)
+      // Get API base URL
+      const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api';
+      
+      // For mobile: Use direct download link approach
+      // For desktop: Fetch and create blob
+      const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      
+      // First get the download URL from the API
+      const response = await fetch(`${apiBase}/notes/${noteIdString}/download`, {
+        method: 'GET',
+        headers: { 'Accept': 'application/json' }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to get download URL: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      console.log('📄 Download response:', data);
+      
+      // Track download - increment count
       try {
         await notesAPI.trackDownload(noteIdString);
-        // Increment download count locally for immediate feedback
         setNote({ ...note, downloads: note.downloads + 1 });
       } catch (trackError) {
-        console.warn('⚠️  Failed to track download:', trackError);
-        // Continue with download anyway
+        console.warn('⚠️ Failed to track download:', trackError);
       }
       
-      // STRATEGY 1: Use note ID endpoint (preferred - more robust)
-      // Use API base URL which already includes /api
-      const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api';
-      const downloadUrl = `${apiBase}/notes/${noteIdString}/download`;
+      // Get the actual download URL
+      let actualDownloadUrl = data.downloadUrl;
       
-      console.log('📡 Fetching from:', downloadUrl);
-      console.log('📡 Request details:', {
-        method: 'GET',
-        url: downloadUrl,
-        timestamp: new Date().toISOString()
-      });
-      
-      // Fetch with timeout
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
-      
-      const response = await fetch(downloadUrl, {
-        method: 'GET',
-        signal: controller.signal,
-        headers: {
-          'Accept': 'application/pdf, application/json'
-        }
-      });
-      
-      clearTimeout(timeoutId);
-      
-      console.log('📡 Response received:', {
-        status: response.status,
-        statusText: response.statusText,
-        contentType: response.headers.get('content-type'),
-        contentLength: response.headers.get('content-length'),
-        contentDisposition: response.headers.get('content-disposition')
-      });
-      
-      // Check if response is OK
-      if (!response.ok) {
-        // Try to parse error message
-        const contentType = response.headers.get('content-type');
-        if (contentType && contentType.includes('application/json')) {
-          const errorData = await response.json();
-          console.error('❌ Server error response:', errorData);
-          throw new Error(errorData.message || `Server error: ${response.status}`);
-        } else {
-          const errorText = await response.text();
-          console.error('❌ Server error text:', errorText);
-          throw new Error(`Download failed with status: ${response.status} - ${response.statusText}`);
-        }
+      // If URL is relative, make it absolute
+      if (actualDownloadUrl && actualDownloadUrl.startsWith('/')) {
+        // Extract base without /api
+        const baseWithoutApi = apiBase.replace(/\/api$/, '');
+        actualDownloadUrl = baseWithoutApi + actualDownloadUrl;
       }
       
-      // Check if response is JSON (signed URL) or binary (direct download)
-      const contentType = response.headers.get('content-type');
+      console.log('📥 Download URL:', actualDownloadUrl);
       
-      if (contentType && contentType.includes('application/json')) {
-        // Response is JSON with downloadUrl (Supabase/signed URL mode)
-        const data = await response.json();
-        console.log('📄 Received JSON response with download URL:', data);
+      // Mobile-optimized download: Use anchor tag with download attribute
+      if (isMobileDevice) {
+        console.log('📱 Mobile download - using anchor tag approach');
         
-        if (data.downloadUrl) {
-          // Open signed URL in new tab
-          window.open(data.downloadUrl, '_blank');
-          console.log('✅ Opened download URL in new tab');
+        // Create a hidden anchor and trigger download
+        const link = document.createElement('a');
+        link.href = actualDownloadUrl;
+        link.download = note.fileName || `${note.title}.pdf`;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        
+        // iOS Safari workaround: open in same window
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+        if (isIOS) {
+          window.location.href = actualDownloadUrl;
         } else {
-          throw new Error('Server returned JSON but no download URL found');
+          document.body.appendChild(link);
+          link.click();
+          setTimeout(() => document.body.removeChild(link), 100);
         }
+        
+        console.log('✅ Mobile download initiated');
       } else {
-        // Response is binary (PDF file - GridFS mode)
-        console.log('📄 Receiving binary file data...');
+        // Desktop: Fetch blob and trigger download
+        console.log('💻 Desktop download - fetching blob');
         
-        // Get the blob
-        const blob = await response.blob();
+        const pdfResponse = await fetch(actualDownloadUrl);
+        if (!pdfResponse.ok) {
+          throw new Error(`Download failed: ${pdfResponse.status}`);
+        }
         
+        const blob = await pdfResponse.blob();
         if (blob.size === 0) {
-          throw new Error('Downloaded file is empty (0 bytes)');
+          throw new Error('Downloaded file is empty');
         }
         
-        console.log('✅ Downloaded blob:', {
-          size: blob.size,
-          type: blob.type,
-          sizeInMB: (blob.size / 1024 / 1024).toFixed(2) + ' MB'
-        });
-        
-        // Extract filename from Content-Disposition header or use default
-        let filename = note.fileName || `${note.title}.pdf` || 'download.pdf';
-        const disposition = response.headers.get('content-disposition');
-        if (disposition) {
-          const filenameMatch = disposition.match(/filename="?([^"]+)"?/);
-          if (filenameMatch && filenameMatch[1]) {
-            filename = filenameMatch[1];
-          }
-        }
-        
-        console.log('📁 Using filename:', filename);
-        
-        // Create download link using Blob URL
+        const filename = note.fileName || `${note.title}.pdf`;
         const blobUrl = window.URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = blobUrl;
         link.download = filename;
         link.style.display = 'none';
-        
-        // Add to document, click, and cleanup
         document.body.appendChild(link);
-        console.log('🖱️  Triggering download...');
         link.click();
         
-        // Cleanup after a short delay
         setTimeout(() => {
           document.body.removeChild(link);
           window.URL.revokeObjectURL(blobUrl);
-          console.log('🧹 Cleaned up download resources');
         }, 100);
         
-        console.log('✅ Download initiated successfully');
+        console.log('✅ Desktop download completed');
       }
       
     } catch (error) {
       console.error('❌ Download error:', error);
-      
-      // Detailed error logging
-      if (error instanceof Error) {
-        console.error('Error details:', {
-          name: error.name,
-          message: error.message,
-          stack: error.stack
-        });
-      }
-      
       const errorMessage = error instanceof Error ? error.message : 'Failed to download file';
-      
-      // User-friendly error message
-      alert(
-        `Download Error: ${errorMessage}\n\n` +
-        `Troubleshooting steps:\n` +
-        `1. Refresh the page and try again\n` +
-        `2. Check your internet connection\n` +
-        `3. Clear browser cache and cookies\n` +
-        `4. Try a different browser\n` +
-        `5. Contact support if the issue persists\n\n` +
-        `Technical details: Check browser console for more information`
-      );
+      alert(`Download Error: ${errorMessage}\n\nPlease try again or use a different browser.`);
     }
   };
 
@@ -389,37 +307,28 @@ export default function NoteDetailPage() {
 
     if (!note) return;
 
-    // Toggle vote
-    if (userVote === voteType) {
-      // Remove vote
-      setUserVote(null);
-      if (voteType === 'up') {
-        setNote({ ...note, upvotes: note.upvotes - 1 });
-      } else {
-        setNote({ ...note, downvotes: note.downvotes - 1 });
-      }
-    } else {
-      // Add or change vote
-      const prevVote = userVote;
-      setUserVote(voteType);
+    const noteIdToVote = note._id || note.id || noteId;
+    
+    try {
+      // Call API first - server is source of truth
+      const response = await notesAPI.voteNote(String(noteIdToVote), voteType === 'up' ? 'upvote' : 'downvote');
       
-      if (voteType === 'up') {
+      // Update local state from API response
+      // The backend returns { message, note } where note contains upvotes/downvotes
+      if (response.data && response.data.note) {
         setNote({
           ...note,
-          upvotes: note.upvotes + 1,
-          downvotes: prevVote === 'down' ? note.downvotes - 1 : note.downvotes
+          upvotes: response.data.note.upvotes ?? note.upvotes,
+          downvotes: response.data.note.downvotes ?? note.downvotes
         });
-      } else {
-        setNote({
-          ...note,
-          downvotes: note.downvotes + 1,
-          upvotes: prevVote === 'up' ? note.upvotes - 1 : note.upvotes
-        });
+        setUserVote(voteType);
       }
+      
+      console.log('✅ Vote registered:', response.data);
+    } catch (error) {
+      console.error('Failed to vote:', error);
+      alert('Failed to register vote. Please try again.');
     }
-
-    // Call API (will implement)
-    // await notesAPI.voteNote(note.id, voteType);
   };
 
   const handleSubmitComment = async (e: React.FormEvent) => {
@@ -435,22 +344,25 @@ export default function NoteDetailPage() {
     try {
       setSubmittingComment(true);
 
-      // Add comment locally
+      // Call API to add comment
+      const response = await notesAPI.addComment(noteId, commentText.trim());
+      const savedComment = response.data.comment;
+
+      // Add comment from API response (source of truth)
       const newComment: Comment = {
-        id: comments.length + 1,
-        text: commentText,
-        userName: user.name,
-        userId: parseInt(user.id),
-        createdAt: new Date().toISOString()
+        id: savedComment._id || savedComment.id,
+        text: savedComment.text,
+        userName: savedComment.userName,
+        userId: savedComment.userId,
+        createdAt: savedComment.createdAt
       };
 
       setComments([newComment, ...comments]);
       setCommentText('');
-
-      // Call API (will implement)
-      // await notesAPI.addComment(noteId, commentText);
+      console.log('✅ Comment added successfully');
     } catch (error) {
       console.error('Failed to submit comment:', error);
+      alert('Failed to add comment. Please try again.');
     } finally {
       setSubmittingComment(false);
     }
@@ -519,9 +431,9 @@ export default function NoteDetailPage() {
         {/* Note Header */}
         <div className="bg-white rounded-lg shadow-md p-6 mb-6">
           <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4 mb-6">
-            <div className="flex-1">
-              <h1 className="text-3xl font-bold text-gray-900 mb-3">{note.title}</h1>
-              <p className="text-gray-600 mb-4">{note.description}</p>
+            <div className="flex-1 min-w-0">
+              <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-gray-900 mb-3 break-words">{note.title}</h1>
+              <p className="text-gray-600 mb-4 text-sm sm:text-base">{note.description}</p>
 
               {/* Metadata Badges */}
               <div className="flex flex-wrap gap-2 mb-4">
@@ -580,28 +492,28 @@ export default function NoteDetailPage() {
           </div>
 
           {/* Stats and Actions Row */}
-          <div className="flex flex-wrap items-center justify-between pt-6 border-t border-gray-200">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pt-6 border-t border-gray-200">
             {/* Stats */}
-            <div className="flex items-center gap-6 text-gray-600">
-              <div className="flex items-center gap-2">
-                <Eye className="w-5 h-5" />
+            <div className="flex flex-wrap items-center gap-4 sm:gap-6 text-gray-600 text-sm sm:text-base">
+              <div className="flex items-center gap-1 sm:gap-2">
+                <Eye className="w-4 h-4 sm:w-5 sm:h-5" />
                 <span className="font-medium">{note.views}</span>
-                <span className="text-sm">views</span>
+                <span className="text-xs sm:text-sm">views</span>
               </div>
-              <div className="flex items-center gap-2">
-                <Download className="w-5 h-5" />
+              <div className="flex items-center gap-1 sm:gap-2">
+                <Download className="w-4 h-4 sm:w-5 sm:h-5" />
                 <span className="font-medium">{note.downloads}</span>
-                <span className="text-sm">downloads</span>
+                <span className="text-xs sm:text-sm">downloads</span>
               </div>
-              <div className="flex items-center gap-2">
-                <MessageSquare className="w-5 h-5" />
+              <div className="flex items-center gap-1 sm:gap-2">
+                <MessageSquare className="w-4 h-4 sm:w-5 sm:h-5" />
                 <span className="font-medium">{comments.length}</span>
-                <span className="text-sm">comments</span>
+                <span className="text-xs sm:text-sm">comments</span>
               </div>
             </div>
 
             {/* Action Buttons */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               {/* Voting */}
               <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
                 <button

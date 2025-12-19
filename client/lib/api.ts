@@ -205,6 +205,18 @@ export const notesAPI = {
 
   reportNote: (id: string, reason: string) =>
     api.post(`/notes/${id}/report`, { reason }),
+
+  // Comments API
+  getComments: (noteId: string) => api.get(`/notes/${noteId}/comments`),
+  
+  addComment: (noteId: string, text: string) => 
+    api.post(`/notes/${noteId}/comments`, { text }),
+  
+  updateComment: (noteId: string, commentId: string, text: string) =>
+    api.put(`/notes/${noteId}/comments/${commentId}`, { text }),
+  
+  deleteComment: (noteId: string, commentId: string) =>
+    api.delete(`/notes/${noteId}/comments/${commentId}`),
 };
 
 // Leaderboard API

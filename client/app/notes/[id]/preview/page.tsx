@@ -57,6 +57,7 @@ export default function PDFPreviewPage() {
   const [note, setNote] = useState<Note | null>(null);
   const [loading, setLoading] = useState(true);
   const [pdfUrl, setPdfUrl] = useState<string>('');
+  const [pdfError, setPdfError] = useState(false); // Track PDF loading errors
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [zoom, setZoom] = useState(100);
@@ -460,18 +461,54 @@ Just type your question below!`,
           flex-1 bg-gray-800 overflow-auto
           ${isMobile ? 'h-full' : isFullscreen ? 'w-full' : chatOpen ? 'md:w-[60%] lg:w-[65%]' : 'w-full'}
         `}>
-          <div className="h-full flex items-start justify-center p-2 sm:p-4">
-            <iframe
-              ref={iframeRef}
-              src={pdfUrl}
-              className="w-full h-full rounded-lg border border-gray-700 bg-white"
-              style={{
-                transform: isMobile ? 'none' : `scale(${zoom / 100})`,
-                transformOrigin: 'top center',
-                minHeight: isMobile ? 'calc(100vh - 140px)' : '100%'
-              }}
-              title="PDF Preview"
-            />
+          <div className="h-full flex flex-col items-center justify-start p-2 sm:p-4">
+            {/* Mobile: Use Google Docs viewer as fallback since iframe PDF doesn't work well on mobile */}
+            {isMobile ? (
+              <>
+                {/* Primary: Try object tag which works better on mobile */}
+                <object
+                  data={pdfUrl}
+                  type="application/pdf"
+                  className="w-full rounded-lg border border-gray-700 bg-white"
+                  style={{ height: 'calc(100vh - 140px)', minHeight: '400px' }}
+                  onError={() => setPdfError(true)}
+                >
+                  {/* Fallback: Google Docs viewer for mobile browsers that can't display PDF */}
+                  <iframe
+                    src={`https://docs.google.com/viewer?url=${encodeURIComponent(pdfUrl)}&embedded=true`}
+                    className="w-full rounded-lg border border-gray-700 bg-white"
+                    style={{ height: 'calc(100vh - 140px)', minHeight: '400px' }}
+                    title="PDF Preview"
+                    sandbox="allow-scripts allow-same-origin"
+                  />
+                </object>
+                {/* Show download prompt if PDF fails to load */}
+                {pdfError && (
+                  <div className="mt-4 p-4 bg-yellow-100 rounded-lg text-center">
+                    <p className="text-yellow-800 text-sm mb-2">
+                      PDF preview may not work on all mobile browsers.
+                    </p>
+                    <Button onClick={handleDownload} size="sm" className="bg-blue-600 hover:bg-blue-700">
+                      <Download className="w-4 h-4 mr-2" />
+                      Download PDF to View
+                    </Button>
+                  </div>
+                )}
+              </>
+            ) : (
+              /* Desktop: Use iframe with zoom support */
+              <iframe
+                ref={iframeRef}
+                src={pdfUrl}
+                className="w-full h-full rounded-lg border border-gray-700 bg-white"
+                style={{
+                  transform: `scale(${zoom / 100})`,
+                  transformOrigin: 'top center',
+                  minHeight: '100%'
+                }}
+                title="PDF Preview"
+              />
+            )}
           </div>
         </div>
 
